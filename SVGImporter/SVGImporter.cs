@@ -4,10 +4,12 @@ using FrooxEngine;
 using HarmonyLib;
 using ResoniteModLoader;
 using SkyFrost.Base;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 
 namespace SVGImporter;
@@ -16,7 +18,7 @@ public class SVGImporter : ResoniteMod
 {
     public override string Name => "SVGImporter";
     public override string Author => "dfgHiatus";
-    public override string Version => "2.0.1";
+    public override string Version => "2.0.2";
     public override string Link => "https://github.com/dfgHiatus/ResoniteSVGImporter/";
     public static ModConfiguration Config;
     private static readonly string TrueCachePath = Path.Combine(Engine.Current.CachePath, "Cache");
@@ -39,8 +41,6 @@ public class SVGImporter : ResoniteMod
 
     public static void AssetPatch()
     {
-        // Revised implementation using reflection to handle API changes
-        // Resonite changed their API AGAIN without any documentation this will probably break in 3 months...
         try
         {
             Debug("Attempting to add SVG support to import system");
@@ -71,21 +71,83 @@ public class SVGImporter : ResoniteMod
                 return;
             }
 
-            // Get the dictionary and add our extension to the Special asset class
+            // Get the dictionary directly
             var extensions = extensionsField.GetValue(null);
-            var dictType = extensions.GetType();
-            var specialValue = dictType.GetMethod("get_Item").Invoke(extensions, new object[] { AssetClass.Special });
 
-            if (specialValue == null)
+            // This part is likely causing the issue - the dictionary might have changed structure
+
+            var dictionaryType = extensions.GetType();
+            Debug($"Dictionary type: {dictionaryType.FullName}");
+
+            // Find the dictionary's indexer without assuming specific implementation
+            var methods = dictionaryType.GetMethods();
+            MethodInfo getItemMethod = null;
+
+            foreach (var method in methods)
             {
-                Error("Couldn't get Special asset class list");
+                if (method.Name == "get_Item" && method.GetParameters().Length == 1 &&
+                    method.GetParameters()[0].ParameterType == typeof(AssetClass))
+                {
+                    getItemMethod = method;
+                    break;
+                }
+            }
+
+            if (getItemMethod == null)
+            {
+                Error("Couldn't find appropriate get_Item method on dictionary");
                 return;
             }
 
-            // Add our ImportExtension to the list
-            specialValue.GetType().GetMethod("Add").Invoke(specialValue, new[] { importExt });
+            // Try to get the Special asset class list
+            object specialList;
+            try
+            {
+                specialList = getItemMethod.Invoke(extensions, new object[] { AssetClass.Special });
+            }
+            catch (Exception ex)
+            {
+                Error($"Failed to get Special asset class list: {ex.Message}");
+                return;
+            }
 
-            Debug("SVG import extension added successfully");
+            if (specialList == null)
+            {
+                Error("Special asset class list is null");
+                return;
+            }
+
+            Debug($"Successfully got special list of type: {specialList.GetType().FullName}");
+
+            // Find the Add method on the list
+            var listType = specialList.GetType();
+            MethodInfo addMethodInfo = null;
+
+            foreach (var method in listType.GetMethods())
+            {
+                if (method.Name == "Add" && method.GetParameters().Length == 1)
+                {
+                    addMethodInfo = method;
+                    break;
+                }
+            }
+
+            if (addMethodInfo == null)
+            {
+                Error("Couldn't find appropriate Add method on list");
+                return;
+            }
+
+            // Try to add our extension
+            try
+            {
+                addMethodInfo.Invoke(specialList, new object[] { importExt });
+                Debug("SVG import extension added successfully");
+            }
+            catch (Exception ex)
+            {
+                Error($"Failed to add import extension: {ex.Message}");
+            }
         }
         catch (System.Exception ex)
         {
